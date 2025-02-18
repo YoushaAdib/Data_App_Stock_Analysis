@@ -1,4 +1,4 @@
-dash==2.11.0
+dash
 dash-table
 pandas
 yfinance

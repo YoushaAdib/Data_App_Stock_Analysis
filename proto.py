@@ -127,9 +127,15 @@ app.layout = html.Div(
             ],
         ),
 
-        # Line chart
+        # Main stock price chart
         dcc.Graph(
             id="stock-chart",
+            style={"marginTop": "20px"},
+        ),
+
+        # Indicator chart
+        dcc.Graph(
+            id="indicator-chart",
             style={"marginTop": "20px"},
         ),
 
@@ -159,6 +165,16 @@ def update_clocks(_):
         html.Div(f"New York: {new_york_time}"),
     ]
 
+# Calculate RSI
+import numpy as np
+def calculate_rsi(data, window=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
 # Update table and dropdown options
 @app.callback(
     [Output("stock-table", "data"), Output("stock-table", "columns"), Output("ticker-dropdown", "options")],
@@ -176,10 +192,13 @@ def update_table_and_dropdown(n_clicks, tickers):
     for ticker in tickers:
         stock = yf.Ticker(ticker)
         info = stock.info
-        history = stock.history(period="1d")
+        history = stock.history(period="1mo")
         close_price = history["Close"][-1] if not history.empty else 0
         open_price = history["Open"][-1] if not history.empty else 0
-        market_cap = info.get("marketCap", 0)
+        beta = info.get("beta", "N/A")
+
+        # Calculate RSI for the last available period
+        rsi = calculate_rsi(history['Close']).iloc[-1] if not history.empty else None
 
         data.append(
             {
@@ -189,8 +208,9 @@ def update_table_and_dropdown(n_clicks, tickers):
                 "Day Range": f"{info.get('dayLow', 0)} - {info.get('dayHigh', 0)}",
                 "52W Range": f"{info.get('fiftyTwoWeekLow', 0)} - {info.get('fiftyTwoWeekHigh', 0)}",
                 "Close - Open": f"{round(close_price, 2)} - {round(open_price, 2)}",
-                "Market Cap": f"{market_cap:,}",
+                "Beta": beta,
                 "Trading Volume": f"{info.get('volume', 0):,}",
+                "RSI": round(rsi, 2) if rsi else "N/A",
             }
         )
 
@@ -198,15 +218,15 @@ def update_table_and_dropdown(n_clicks, tickers):
 
     columns = [
         {"name": col, "id": col} for col in [
-            "Ticker", "Company Name", "Current Price", "Day Range", "52W Range", "Close - Open", "Market Cap", "Trading Volume"
+            "Ticker", "Company Name", "Current Price", "Day Range", "52W Range", "Close - Open", "Beta", "Trading Volume", "RSI"
         ]
     ]
 
     return data, columns, options
 
-# Update chart based on dropdown selection
+# Update main chart and indicator chart
 @app.callback(
-    Output("stock-chart", "figure"),
+    [Output("stock-chart", "figure"), Output("indicator-chart", "figure")],
     [
         Input("ticker-dropdown", "value"),
         Input("interval-dropdown", "value"),
@@ -215,39 +235,71 @@ def update_table_and_dropdown(n_clicks, tickers):
     ],
     prevent_initial_call=True,
 )
-def update_chart(selected_ticker, selected_interval, selected_duration, chart_type):
+def update_charts(selected_ticker, selected_interval, selected_duration, chart_type):
     if not selected_ticker or not selected_interval or not selected_duration or not chart_type:
-        return go.Figure()
+        return go.Figure(), go.Figure()
 
     stock = yf.Ticker(selected_ticker)
     history = stock.history(interval=selected_interval, period=selected_duration)
 
-    fig = go.Figure()
+    # Main chart
+    fig_main = go.Figure()
     if chart_type == "line":
-        fig.add_trace(
-            go.Scatter(x=history.index, y=history["Close"], mode="lines", name=selected_ticker)
+        fig_main.add_trace(
+            go.Scatter(x=history.index, y=history["Close"], mode="lines", line=dict(color="#89CFF0"))
         )
     elif chart_type == "candlestick":
-        fig.add_trace(
+        fig_main.add_trace(
             go.Candlestick(
                 x=history.index,
                 open=history["Open"],
                 high=history["High"],
                 low=history["Low"],
                 close=history["Close"],
-                name=selected_ticker,
             )
         )
 
-    fig.update_layout(
+    # Add trading volume as a bar chart, colored by positive (green) or negative (red) trading sentiment
+    colors = ["green" if history["Close"][i] >= history["Open"][i] else "red" for i in range(len(history))]
+    fig_main.add_trace(
+        go.Bar(
+            x=history.index,
+            y=history["Volume"],
+            marker_color=colors,
+            yaxis="y2",
+        )
+    )
+
+    fig_main.update_layout(
         template="plotly_dark",
         title=f"{selected_ticker} Trends ({selected_interval} Interval, {selected_duration} Duration)",
         xaxis_title="Time",
         yaxis_title="Price",
+        yaxis2={
+            "title": "Volume",
+            "overlaying": "y",
+            "side": "right",
+            "showgrid": False,
+        },
+        showlegend=False,
     )
 
-    return fig
+    # Indicator chart
+    fig_indicator = go.Figure()
+    fig_indicator.add_trace(
+        go.Scatter(x=history.index, y=calculate_rsi(history["Close"]), mode="lines", line=dict(color="orange"), name="RSI")
+    )
+
+    fig_indicator.update_layout(
+        template="plotly_dark",
+        title="Indicator Trends (RSI)",
+        xaxis_title="Time",
+        yaxis_title="Indicator Value",
+        showlegend=True,
+    )
+
+    return fig_main, fig_indicator
 
 # Run the app
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8051)
+    app.run_server(debug=True, port=8052)
